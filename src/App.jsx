@@ -34,21 +34,31 @@ function App() {
   }, []);
 
   const handleAddSchedule = async (schedule) => {
-    if (db) {
-      await addDoc(collection(db, 'schedules'), schedule);
-    } else {
-      // 로컬 테스트용 폴백 (저장 안 됨)
-      setSchedules(prev => [...prev, { ...schedule, id: Date.now().toString() }]);
+    try {
+      if (db) {
+        await addDoc(collection(db, 'schedules'), schedule);
+      } else {
+        // 로컬 테스트용 폴백 (저장 안 됨)
+        setSchedules(prev => [...prev, { ...schedule, id: Date.now().toString() }]);
+      }
+      setIsModalOpen(false);
+    } catch (error) {
+      console.error("Error adding document: ", error);
+      alert("앗! 일정 저장에 실패했습니다. (에러: " + error.message + ")");
     }
-    setIsModalOpen(false);
   };
 
   const handleDeleteSchedule = async (id) => {
     if (window.confirm('이 일정을 삭제하시겠습니까?')) {
-      if (db) {
-        await deleteDoc(doc(db, 'schedules', id));
-      } else {
-        setSchedules(prev => prev.filter(s => s.id !== id));
+      try {
+        if (db) {
+          await deleteDoc(doc(db, 'schedules', id));
+        } else {
+          setSchedules(prev => prev.filter(s => s.id !== id));
+        }
+      } catch (error) {
+        console.error("Error deleting document: ", error);
+        alert("앗! 일정 삭제에 실패했습니다. (에러: " + error.message + ")");
       }
     }
   };
@@ -134,15 +144,10 @@ function App() {
               {daySchedules.map(schedule => {
                 const isStart = isSameDay(cloneDay, parseISO(schedule.startDate));
                 const isEnd = isSameDay(cloneDay, parseISO(schedule.endDate));
-                const isWeekStart = dayOfWeek === 0;
-                
-                // 텍스트는 시작일이거나, 주의 첫날일 때만 표시 (가독성 향상)
-                const showText = isStart || isWeekStart;
-
                 return (
                   <div 
                     key={schedule.id} 
-                    className={`schedule-badge cat-${schedule.category} ${isStart ? 'is-start' : ''} ${isEnd ? 'is-end' : ''} ${!showText ? 'hide-text' : ''}`}
+                    className={`schedule-badge cat-${schedule.category} ${isStart ? 'is-start' : ''} ${isEnd ? 'is-end' : ''}`}
                     onClick={(e) => {
                       e.stopPropagation();
                       handleDeleteSchedule(schedule.id);

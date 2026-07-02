@@ -6,14 +6,14 @@
   --surface-color: rgba(255, 255, 255, 0.75);
   --border-color: rgba(0, 0, 0, 0.08);
   
-  --cat-vacation-bg: #e8f5e9;
-  --cat-vacation-text: #2e7d32;
-  --cat-outside-bg: #e3f2fd;
-  --cat-outside-text: #1565c0;
-  --cat-meeting-bg: #fff3e0;
-  --cat-meeting-text: #e65100;
-  --cat-other-bg: #f3e5f5;
-  --cat-other-text: #6a1b9a;
+  --cat-vacation-bg: #34c759;
+  --cat-vacation-text: #ffffff;
+  --cat-outside-bg: #007aff;
+  --cat-outside-text: #ffffff;
+  --cat-meeting-bg: #ff9500;
+  --cat-meeting-text: #ffffff;
+  --cat-other-bg: #af52de;
+  --cat-other-text: #ffffff;
 }
 
 * {
@@ -301,10 +301,7 @@ input, select, textarea {
   border-bottom-right-radius: 6px;
 }
 
-/* 텍스트는 시작일이거나, 주의 첫날일 때만 표시 */
-.schedule-badge.hide-text .name {
-  opacity: 0;
-}
+/* Removed hide-text logic so names are always visible */
 
 .cat-vacation { background: var(--cat-vacation-bg); color: var(--cat-vacation-text); }
 .cat-outside { background: var(--cat-outside-bg); color: var(--cat-outside-text); }
