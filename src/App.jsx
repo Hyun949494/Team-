@@ -119,8 +119,10 @@ function App() {
         
         // 해당 날짜에 포함되는 일정 필터링
         const daySchedules = filteredSchedules.filter(s => {
+          if (!s.startDate || !s.endDate) return false;
           const sStart = parseISO(s.startDate);
           const sEnd = parseISO(s.endDate);
+          if (isNaN(sStart) || isNaN(sEnd)) return false;
           return isWithinInterval(cloneDay, { start: new Date(sStart.setHours(0,0,0,0)), end: new Date(sEnd.setHours(23,59,59,999)) });
         });
 
@@ -217,6 +219,7 @@ function App() {
           </div>
           <div className="dashboard-list">
             {filteredSchedules
+              .filter(s => s.startDate && s.endDate && !isNaN(parseISO(s.startDate)) && !isNaN(parseISO(s.endDate)))
               .filter(s => new Date(s.endDate) >= new Date(new Date().setHours(0,0,0,0)))
               .sort((a, b) => new Date(a.startDate) - new Date(b.startDate))
               .slice(0, 5)
