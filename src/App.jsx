@@ -7,8 +7,8 @@ import { db } from './firebase';
 import './App.css';
 import './index.css';
 
-// 가상의 팀원 목록 (수정 가능)
-const TEAM_MEMBERS = ['김팀장', '이대리', '박과장', '최사원', '정주임'];
+// 실제 팀원 목록
+const TEAM_MEMBERS = ['김충현', '김두현', '정연철', '조은애', '김수환', '김지훈', '오수민', '이수정', '장은지'];
 
 function App() {
   const [currentDate, setCurrentDate] = useState(new Date());
