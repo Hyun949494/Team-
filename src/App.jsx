@@ -74,14 +74,23 @@ function App() {
 
   const renderHeader = () => {
     return (
-      <div className="calendar-header">
-        <div className="month-display">
-          <h2>{format(currentDate, 'yyyy년 M월')}</h2>
+      <div className="calendar-header-container">
+        <div className="calendar-header">
+          <div className="month-display">
+            <h2>{format(currentDate, 'yyyy년 M월')}</h2>
+          </div>
+          <div className="nav-buttons">
+            <button onClick={prevMonth} className="icon-btn"><ChevronLeft size={20} /></button>
+            <button onClick={() => setCurrentDate(new Date())} className="today-btn">오늘</button>
+            <button onClick={nextMonth} className="icon-btn"><ChevronRight size={20} /></button>
+          </div>
         </div>
-        <div className="nav-buttons">
-          <button onClick={prevMonth} className="icon-btn"><ChevronLeft size={20} /></button>
-          <button onClick={() => setCurrentDate(new Date())} className="today-btn">오늘</button>
-          <button onClick={nextMonth} className="icon-btn"><ChevronRight size={20} /></button>
+        <div className="category-legend">
+          <span className="legend-item cat-vacation">휴가</span>
+          <span className="legend-item cat-outside">외근</span>
+          <span className="legend-item cat-meeting">회의</span>
+          <span className="legend-item cat-training">교육</span>
+          <span className="legend-item cat-other">기타</span>
         </div>
       </div>
     );
@@ -257,7 +266,8 @@ const getCategoryLabel = (cat) => {
   const map = {
     vacation: '휴가',
     outside: '외근',
-    meeting: '미팅',
+    meeting: '회의',
+    training: '교육',
     other: '기타'
   };
   return map[cat] || cat;
@@ -324,7 +334,8 @@ function ScheduleModal({ onClose, onSave, selectedDate }) {
             <select value={category} onChange={e => setCategory(e.target.value)}>
               <option value="vacation">휴가</option>
               <option value="outside">외근</option>
-              <option value="meeting">미팅</option>
+              <option value="meeting">회의</option>
+              <option value="training">교육</option>
               <option value="other">기타</option>
             </select>
           </div>

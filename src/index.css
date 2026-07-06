@@ -14,6 +14,8 @@
   --cat-meeting-text: #ffffff;
   --cat-other-bg: #af52de;
   --cat-other-text: #ffffff;
+  --cat-training-bg: #ff2d55;
+  --cat-training-text: #ffffff;
 }
 
 * {
@@ -306,7 +308,25 @@ input, select, textarea {
 .cat-vacation { background: var(--cat-vacation-bg); color: var(--cat-vacation-text); }
 .cat-outside { background: var(--cat-outside-bg); color: var(--cat-outside-text); }
 .cat-meeting { background: var(--cat-meeting-bg); color: var(--cat-meeting-text); }
+.cat-training { background: var(--cat-training-bg); color: var(--cat-training-text); }
 .cat-other { background: var(--cat-other-bg); color: var(--cat-other-text); }
+
+/* Legend */
+.category-legend {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  margin-bottom: 16px;
+}
+
+.legend-item {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 980px;
+  display: inline-block;
+}
 
 
 /* Dashboard */
