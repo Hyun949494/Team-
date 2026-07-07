@@ -168,7 +168,7 @@ function App() {
                     }}
                     title={`${schedule.name} - ${schedule.type || getCategoryLabel(schedule.category)}`}
                   >
-                    <span className="name">{schedule.name}</span>
+                    <span className="name">{schedule.name} {schedule.type ? `(${schedule.type})` : (schedule.category === 'vacation' ? '(휴가)' : '')}</span>
                   </div>
                 );
               })}
@@ -292,7 +292,7 @@ const getCategoryLabel = (cat) => {
 
 function ScheduleModal({ onClose, onSave, selectedDate }) {
   const [name, setName] = useState(TEAM_MEMBERS[0]);
-  const [category, setCategory] = useState('vacation');
+  const [category, setCategory] = useState('outside'); // 휴가가 빠졌으므로 기본값을 '외근'으로 설정
   const [startDate, setStartDate] = useState(format(selectedDate || new Date(), 'yyyy-MM-dd'));
   const [endDate, setEndDate] = useState(format(selectedDate || new Date(), 'yyyy-MM-dd'));
   const [memo, setMemo] = useState('');
@@ -349,7 +349,6 @@ function ScheduleModal({ onClose, onSave, selectedDate }) {
           <div className="form-group">
             <label>분류</label>
             <select value={category} onChange={e => setCategory(e.target.value)}>
-              <option value="vacation">휴가</option>
               <option value="outside">외근</option>
               <option value="meeting">회의</option>
               <option value="training">교육</option>
