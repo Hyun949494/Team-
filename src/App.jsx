@@ -17,6 +17,8 @@ function App() {
   const [selectedDate, setSelectedDate] = useState(null);
   const [selectedMember, setSelectedMember] = useState('all'); // 필터용
   const [isFirebaseReady, setIsFirebaseReady] = useState(!!db);
+  const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
+  const [selectedSchedule, setSelectedSchedule] = useState(null);
 
   // Firestore 실시간 데이터 구독
   useEffect(() => {
@@ -161,9 +163,10 @@ function App() {
                     className={`schedule-badge cat-${schedule.category} ${isStart ? 'is-start' : ''} ${isEnd ? 'is-end' : ''}`}
                     onClick={(e) => {
                       e.stopPropagation();
-                      handleDeleteSchedule(schedule.id);
+                      setSelectedSchedule(schedule);
+                      setIsDetailModalOpen(true);
                     }}
-                    title={`${schedule.name} - ${getCategoryLabel(schedule.category)}`}
+                    title={`${schedule.name} - ${schedule.type || getCategoryLabel(schedule.category)}`}
                   >
                     <span className="name">{schedule.name}</span>
                   </div>
@@ -256,6 +259,20 @@ function App() {
           onClose={() => setIsModalOpen(false)}
           onSave={handleAddSchedule}
           selectedDate={selectedDate}
+        />
+      )}
+
+      {isDetailModalOpen && (
+        <ScheduleDetailModal 
+          schedule={selectedSchedule}
+          onClose={() => {
+            setIsDetailModalOpen(false);
+            setSelectedSchedule(null);
+          }}
+          onDelete={(id) => {
+            handleDeleteSchedule(id);
+            setIsDetailModalOpen(false);
+          }}
         />
       )}
     </div>
@@ -353,6 +370,58 @@ function ScheduleModal({ onClose, onSave, selectedDate }) {
             <button type="submit" className="btn-primary">저장하기</button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+}
+
+function ScheduleDetailModal({ schedule, onClose, onDelete }) {
+  if (!schedule) return null;
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content glass-panel" onClick={e => e.stopPropagation()} style={{ maxWidth: '400px' }}>
+        <div className="modal-header">
+          <h3>일정 상세 정보</h3>
+          <button className="close-btn" onClick={onClose}>&times;</button>
+        </div>
+        <div style={{ padding: '10px 0', display: 'flex', flexDirection: 'column', gap: '15px' }}>
+          <div style={{ display: 'flex', borderBottom: '1px solid #eee', paddingBottom: '10px' }}>
+            <span style={{ width: '80px', color: '#666', fontWeight: 'bold' }}>팀원</span>
+            <span style={{ fontWeight: 'bold', fontSize: '1.1em' }}>{schedule.name}</span>
+          </div>
+          <div style={{ display: 'flex', borderBottom: '1px solid #eee', paddingBottom: '10px' }}>
+            <span style={{ width: '80px', color: '#666', fontWeight: 'bold' }}>구분</span>
+            <span style={{ padding: '4px 10px', backgroundColor: '#e6f7ff', color: '#0050b3', borderRadius: '4px', fontWeight: 'bold' }}>
+              {schedule.type || getCategoryLabel(schedule.category)}
+            </span>
+          </div>
+          <div style={{ display: 'flex', borderBottom: '1px solid #eee', paddingBottom: '10px' }}>
+            <span style={{ width: '80px', color: '#666', fontWeight: 'bold' }}>일자</span>
+            <span>
+              {format(parseISO(schedule.startDate), 'yyyy년 M월 d일', { locale: ko })} 
+              {schedule.startDate !== schedule.endDate && ` ~ ${format(parseISO(schedule.endDate), 'yyyy년 M월 d일', { locale: ko })}`}
+            </span>
+          </div>
+          {schedule.memo && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+              <span style={{ color: '#666', fontWeight: 'bold' }}>비고 (상세 내용)</span>
+              <div style={{ backgroundColor: '#f9f9f9', padding: '12px', borderRadius: '6px', border: '1px solid #eaeaea', whiteSpace: 'pre-wrap' }}>
+                {schedule.memo}
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="modal-actions" style={{ justifyContent: 'space-between', marginTop: '20px' }}>
+          <button 
+            type="button" 
+            onClick={() => onDelete(schedule.id)}
+            style={{ backgroundColor: '#ff4d4f', color: 'white', padding: '10px 16px', borderRadius: '6px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}
+          >
+            일정 삭제
+          </button>
+          <button type="button" className="btn-primary" onClick={onClose}>확인</button>
+        </div>
       </div>
     </div>
   );
