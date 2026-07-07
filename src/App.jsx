@@ -38,12 +38,24 @@ function App() {
   const handleAddSchedule = async (schedule) => {
     try {
       if (db) {
-        await addDoc(collection(db, 'schedules'), schedule);
+        if (schedule.id) {
+          // Update existing
+          const { id, ...data } = schedule;
+          const { setDoc } = await import('firebase/firestore');
+          await setDoc(doc(db, 'schedules', id), data, { merge: true });
+        } else {
+          // Add new
+          await addDoc(collection(db, 'schedules'), schedule);
+        }
       } else {
-        // 로컬 테스트용 폴백 (저장 안 됨)
-        setSchedules(prev => [...prev, { ...schedule, id: Date.now().toString() }]);
+        if (schedule.id) {
+          setSchedules(prev => prev.map(s => s.id === schedule.id ? schedule : s));
+        } else {
+          setSchedules(prev => [...prev, { ...schedule, id: Date.now().toString() }]);
+        }
       }
       setIsModalOpen(false);
+      setSelectedSchedule(null);
     } catch (error) {
       console.error("Error adding document: ", error);
       alert("앗! 일정 저장에 실패했습니다. (에러: " + error.message + ")");
@@ -208,6 +220,7 @@ function App() {
             className="btn-primary"
             onClick={() => {
               setSelectedDate(new Date());
+              setSelectedSchedule(null);
               setIsModalOpen(true);
             }}
           >
@@ -256,9 +269,13 @@ function App() {
 
       {isModalOpen && (
         <ScheduleModal 
-          onClose={() => setIsModalOpen(false)}
+          onClose={() => {
+            setIsModalOpen(false);
+            setSelectedSchedule(null);
+          }}
           onSave={handleAddSchedule}
           selectedDate={selectedDate}
+          editingSchedule={selectedSchedule}
         />
       )}
 
@@ -272,6 +289,10 @@ function App() {
           onDelete={(id) => {
             handleDeleteSchedule(id);
             setIsDetailModalOpen(false);
+          }}
+          onEdit={() => {
+            setIsDetailModalOpen(false);
+            setIsModalOpen(true);
           }}
         />
       )}
@@ -290,12 +311,12 @@ const getCategoryLabel = (cat) => {
   return map[cat] || cat;
 };
 
-function ScheduleModal({ onClose, onSave, selectedDate }) {
-  const [name, setName] = useState(TEAM_MEMBERS[0]);
-  const [category, setCategory] = useState('outside'); // 휴가가 빠졌으므로 기본값을 '외근'으로 설정
-  const [startDate, setStartDate] = useState(format(selectedDate || new Date(), 'yyyy-MM-dd'));
-  const [endDate, setEndDate] = useState(format(selectedDate || new Date(), 'yyyy-MM-dd'));
-  const [memo, setMemo] = useState('');
+function ScheduleModal({ onClose, onSave, selectedDate, editingSchedule }) {
+  const [name, setName] = useState(editingSchedule ? editingSchedule.name : TEAM_MEMBERS[0]);
+  const [category, setCategory] = useState(editingSchedule ? editingSchedule.category : 'outside'); // 휴가가 빠졌으므로 기본값을 '외근'으로 설정
+  const [startDate, setStartDate] = useState(editingSchedule ? editingSchedule.startDate : format(selectedDate || new Date(), 'yyyy-MM-dd'));
+  const [endDate, setEndDate] = useState(editingSchedule ? editingSchedule.endDate : format(selectedDate || new Date(), 'yyyy-MM-dd'));
+  const [memo, setMemo] = useState(editingSchedule ? editingSchedule.memo : '');
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -303,14 +324,14 @@ function ScheduleModal({ onClose, onSave, selectedDate }) {
       alert('종료일은 시작일보다 빠를 수 없습니다.');
       return;
     }
-    onSave({ name, category, startDate, endDate, memo });
+    onSave({ id: editingSchedule?.id, name, category, startDate, endDate, memo });
   };
 
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content glass-panel" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
-          <h3>일정 등록</h3>
+          <h3>{editingSchedule ? '일정 수정' : '일정 등록'}</h3>
           <button className="close-btn" onClick={onClose}>&times;</button>
         </div>
         <form onSubmit={handleSubmit} className="modal-form">
@@ -374,7 +395,7 @@ function ScheduleModal({ onClose, onSave, selectedDate }) {
   );
 }
 
-function ScheduleDetailModal({ schedule, onClose, onDelete }) {
+function ScheduleDetailModal({ schedule, onClose, onDelete, onEdit }) {
   if (!schedule) return null;
 
   return (
@@ -412,13 +433,24 @@ function ScheduleDetailModal({ schedule, onClose, onDelete }) {
           )}
         </div>
         <div className="modal-actions" style={{ justifyContent: 'space-between', marginTop: '20px' }}>
-          <button 
-            type="button" 
-            onClick={() => onDelete(schedule.id)}
-            style={{ backgroundColor: '#ff4d4f', color: 'white', padding: '10px 16px', borderRadius: '6px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}
-          >
-            일정 삭제
-          </button>
+          <div style={{ display: 'flex', gap: '10px' }}>
+            <button 
+              type="button" 
+              onClick={() => onDelete(schedule.id)}
+              style={{ backgroundColor: '#ff4d4f', color: 'white', padding: '10px 16px', borderRadius: '6px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}
+            >
+              일정 삭제
+            </button>
+            {schedule.category !== 'vacation' && (
+              <button 
+                type="button" 
+                onClick={onEdit}
+                style={{ backgroundColor: '#1890ff', color: 'white', padding: '10px 16px', borderRadius: '6px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}
+              >
+                일정 수정
+              </button>
+            )}
+          </div>
           <button type="button" className="btn-primary" onClick={onClose}>확인</button>
         </div>
       </div>
