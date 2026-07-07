@@ -88,7 +88,8 @@ input, select, textarea {
 }
 
 .app-container {
-  max-width: 1200px;
+  max-width: 1600px;
+  width: 96%;
   margin: 0 auto;
   padding: 40px 20px;
   display: flex;
