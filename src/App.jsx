@@ -45,7 +45,8 @@ function App() {
           await setDoc(doc(db, 'schedules', id), data, { merge: true });
         } else {
           // Add new
-          await addDoc(collection(db, 'schedules'), schedule);
+          const { id, ...data } = schedule;
+          await addDoc(collection(db, 'schedules'), data);
         }
       } else {
         if (schedule.id) {
@@ -324,7 +325,11 @@ function ScheduleModal({ onClose, onSave, selectedDate, editingSchedule }) {
       alert('종료일은 시작일보다 빠를 수 없습니다.');
       return;
     }
-    onSave({ id: editingSchedule?.id, name, category, startDate, endDate, memo });
+    const scheduleData = { name, category, startDate, endDate, memo };
+    if (editingSchedule?.id) {
+      scheduleData.id = editingSchedule.id;
+    }
+    onSave(scheduleData);
   };
 
   return (
