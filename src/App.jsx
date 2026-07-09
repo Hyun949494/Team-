@@ -35,24 +35,30 @@ function App() {
     return () => unsubscribe();
   }, []);
 
-  const handleAddSchedule = async (schedule) => {
+  const handleAddSchedule = async (schedules) => {
     try {
+      const scheduleArray = Array.isArray(schedules) ? schedules : [schedules];
+      
       if (db) {
-        if (schedule.id) {
-          // Update existing
-          const { id, ...data } = schedule;
-          const { setDoc } = await import('firebase/firestore');
-          await setDoc(doc(db, 'schedules', id), data, { merge: true });
-        } else {
-          // Add new
-          const { id, ...data } = schedule;
-          await addDoc(collection(db, 'schedules'), data);
+        for (const schedule of scheduleArray) {
+          if (schedule.id) {
+            // Update existing
+            const { id, ...data } = schedule;
+            const { setDoc } = await import('firebase/firestore');
+            await setDoc(doc(db, 'schedules', id), data, { merge: true });
+          } else {
+            // Add new
+            const { id, ...data } = schedule;
+            await addDoc(collection(db, 'schedules'), data);
+          }
         }
       } else {
-        if (schedule.id) {
-          setSchedules(prev => prev.map(s => s.id === schedule.id ? schedule : s));
-        } else {
-          setSchedules(prev => [...prev, { ...schedule, id: Date.now().toString() }]);
+        for (const schedule of scheduleArray) {
+          if (schedule.id) {
+            setSchedules(prev => prev.map(s => s.id === schedule.id ? schedule : s));
+          } else {
+            setSchedules(prev => [...prev, { ...schedule, id: Date.now().toString() + Math.random() }]);
+          }
         }
       }
       setIsModalOpen(false);
@@ -313,23 +319,39 @@ const getCategoryLabel = (cat) => {
 };
 
 function ScheduleModal({ onClose, onSave, selectedDate, editingSchedule }) {
-  const [name, setName] = useState(editingSchedule ? editingSchedule.name : TEAM_MEMBERS[0]);
+  const [selectedNames, setSelectedNames] = useState(editingSchedule ? [editingSchedule.name] : [TEAM_MEMBERS[0]]);
   const [category, setCategory] = useState(editingSchedule ? editingSchedule.category : 'outside'); // 휴가가 빠졌으므로 기본값을 '외근'으로 설정
   const [startDate, setStartDate] = useState(editingSchedule ? editingSchedule.startDate : format(selectedDate || new Date(), 'yyyy-MM-dd'));
   const [endDate, setEndDate] = useState(editingSchedule ? editingSchedule.endDate : format(selectedDate || new Date(), 'yyyy-MM-dd'));
   const [memo, setMemo] = useState(editingSchedule ? editingSchedule.memo : '');
 
+  const toggleName = (m) => {
+    if (editingSchedule) return; // 수정 시에는 다중 선택 불가
+    setSelectedNames(prev => 
+      prev.includes(m) ? prev.filter(n => n !== m) : [...prev, m]
+    );
+  };
+
   const handleSubmit = (e) => {
     e.preventDefault();
+    if (selectedNames.length === 0) {
+      alert('최소 한 명 이상의 팀원을 선택해주세요.');
+      return;
+    }
     if (new Date(startDate) > new Date(endDate)) {
       alert('종료일은 시작일보다 빠를 수 없습니다.');
       return;
     }
-    const scheduleData = { name, category, startDate, endDate, memo };
-    if (editingSchedule?.id) {
-      scheduleData.id = editingSchedule.id;
-    }
-    onSave(scheduleData);
+    
+    const schedulesToSave = selectedNames.map(name => {
+      const scheduleData = { name, category, startDate, endDate, memo };
+      if (editingSchedule?.id && selectedNames.length === 1) {
+        scheduleData.id = editingSchedule.id;
+      }
+      return scheduleData;
+    });
+    
+    onSave(schedulesToSave);
   };
 
   return (
@@ -367,10 +389,20 @@ function ScheduleModal({ onClose, onSave, selectedDate, editingSchedule }) {
             </div>
           </div>
           <div className="form-group">
-            <label>팀원 선택</label>
-            <select value={name} onChange={e => setName(e.target.value)}>
-              {TEAM_MEMBERS.map(m => <option key={m} value={m}>{m}</option>)}
-            </select>
+            <label>팀원 선택 {editingSchedule && '(수정 시 인원 변경 불가)'}</label>
+            <div className="member-chips">
+              {TEAM_MEMBERS.map(m => (
+                <button
+                  key={m}
+                  type="button"
+                  className={`member-chip ${selectedNames.includes(m) ? 'selected' : ''}`}
+                  onClick={() => toggleName(m)}
+                  disabled={editingSchedule && m !== editingSchedule.name}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="form-group">
             <label>분류</label>
