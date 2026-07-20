@@ -8,7 +8,7 @@ import './App.css';
 import './index.css';
 
 // 실제 팀원 목록
-const TEAM_MEMBERS = ['김충현', '김두현', '정연철', '조은애', '김수환', '김지훈', '오수민', '이수정', '장은지'];
+const TEAM_MEMBERS = ['김충현', '김두현', '정연철', '조은애', '김수환', '김지훈', '오수민', '이수정', '장은지', '개발4팀'];
 
 function App() {
   const [currentDate, setCurrentDate] = useState(new Date());
