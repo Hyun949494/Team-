@@ -234,8 +234,12 @@ function App() {
       <main className="main-content">
         <div className="calendar-wrapper glass-panel">
           {renderHeader()}
-          {renderDays()}
-          {renderCells()}
+          <div className="calendar-scroll-area">
+            <div className="calendar-grid-min-width">
+              {renderDays()}
+              {renderCells()}
+            </div>
+          </div>
         </div>
 
         <aside className="dashboard-wrapper glass-panel">
