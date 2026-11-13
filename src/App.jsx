@@ -1167,7 +1167,7 @@ function SyncGuideModal({ onClose, onToast }) {
             <div className="step-guide-item">
               <span className="step-num">3</span>
               <span>
-                사내 그룹웨어(비즈박스) 로그인 화면에서 방금 추가한 북마크만 누르면 기결·상신·참조함 휴가가 2초 만에 자동 반영됩니다.
+                사내 그룹웨어(비즈박스)에 <strong>로그인해 둔 화면</strong>에서 방금 추가한 북마크만 누르면 기결·상신·참조함 휴가가 2초 만에 자동 반영됩니다.
               </span>
             </div>
           </div>
