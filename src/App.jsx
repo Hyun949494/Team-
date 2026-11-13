@@ -1,426 +1,1078 @@
-import { useState, useEffect, useMemo } from 'react';
-import { format, startOfWeek, endOfWeek, addDays, startOfMonth, endOfMonth, isSameMonth, isSameDay, addMonths, subMonths, parseISO, isWithinInterval } from 'date-fns';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import {
+  format,
+  startOfWeek,
+  endOfWeek,
+  addDays,
+  startOfMonth,
+  endOfMonth,
+  isSameMonth,
+  isSameDay,
+  addMonths,
+  subMonths,
+  parseISO,
+  differenceInCalendarDays
+} from 'date-fns';
 import { ko } from 'date-fns/locale';
-import { ChevronLeft, ChevronRight, Plus, Calendar as CalendarIcon, Users } from 'lucide-react';
-import { collection, onSnapshot, addDoc, deleteDoc, doc } from 'firebase/firestore';
+import {
+  ChevronLeft,
+  ChevronRight,
+  Plus,
+  Calendar as CalendarIcon,
+  RefreshCw,
+  Settings,
+  Search,
+  X
+} from 'lucide-react';
+import { collection, onSnapshot, addDoc, deleteDoc, doc, setDoc } from 'firebase/firestore';
 import { db } from './firebase';
 import './App.css';
 import './index.css';
 
-// 실제 팀원 목록
-const TEAM_MEMBERS = ['김충현', '김두현', '정연철', '조은애', '김수환', '김지훈', '오수민', '이수정', '장은지', '개발4팀'];
+const TEAM_MEMBERS = [
+  '조은애',
+  '김충현',
+  '김두현',
+  '정연철',
+  '김수환',
+  '김지훈',
+  '오수민',
+  '이수정',
+  '장은지',
+  '개발4팀'
+];
+
+const CATEGORIES = [
+  { key: 'vacation', label: '휴가' },
+  { key: 'outside', label: '외근' },
+  { key: 'meeting', label: '회의' },
+  { key: 'training', label: '교육' },
+  { key: 'other', label: '기타' }
+];
+
+const CATEGORY_ORDER = {
+  vacation: 1,
+  outside: 2,
+  meeting: 3,
+  training: 4,
+  other: 5
+};
+
+const CREDS_STORAGE_KEY = 'bizbox_sync_creds_v1';
+
+const getCategoryLabel = (cat) => {
+  const found = CATEGORIES.find((c) => c.key === cat);
+  return found ? found.label : cat || '기타';
+};
+
+const isValidDateStr = (str) => typeof str === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(str);
+
+const splitNames = (nameStr) =>
+  String(nameStr || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+const formatWhoLabel = (nameStr, compact = false) => {
+  const list = splitNames(nameStr);
+  if (list.length === 0) return '미지정';
+  if (list.length === 1) return list[0];
+  if (compact) {
+    return `${list[0]} 외 ${list.length - 1}`;
+  }
+  if (list.length <= 2) {
+    return list.join(', ');
+  }
+  return `${list[0]}, ${list[1]} 외 ${list.length - 2}명`;
+};
 
 function App() {
   const [currentDate, setCurrentDate] = useState(new Date());
+  const [focusedDate, setFocusedDate] = useState(new Date());
   const [schedules, setSchedules] = useState([]);
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [selectedDate, setSelectedDate] = useState(null);
-  const [selectedMember, setSelectedMember] = useState('all'); // 필터용
-  const [isFirebaseReady, setIsFirebaseReady] = useState(!!db);
-  const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
+  const [selectedMember, setSelectedMember] = useState('all');
+  const [selectedCategory, setSelectedCategory] = useState('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [mobileTab, setMobileTab] = useState('calendar');
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth <= 768 : false
+  );
+
+  // Modals
+  const [isFormOpen, setIsFormOpen] = useState(false);
+  const [modalTargetDate, setModalTargetDate] = useState(null);
   const [selectedSchedule, setSelectedSchedule] = useState(null);
+  const [isDetailOpen, setIsDetailOpen] = useState(false);
+  const [isSyncConfigOpen, setIsSyncConfigOpen] = useState(false);
 
-  // Firestore 실시간 데이터 구독
-  useEffect(() => {
-    if (!db) {
-      setIsFirebaseReady(false);
-      return;
-    }
+  // Sync state
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncMeta, setSyncMeta] = useState(null);
+  const autoSyncAttempted = useRef(false);
 
-    const unsubscribe = onSnapshot(collection(db, 'schedules'), (snapshot) => {
-      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setSchedules(data);
-    });
+  // Toast state
+  const [toasts, setToasts] = useState([]);
 
-    return () => unsubscribe();
+  const pushToast = useCallback((message, type = 'info') => {
+    const id = `${Date.now()}_${Math.random()}`;
+    setToasts((prev) => [...prev, { id, message, type }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 3400);
   }, []);
 
-  const handleAddSchedule = async (schedule) => {
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth <= 768);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  // Firestore real-time listeners
+  useEffect(() => {
+    if (!db) return;
+
+    const unsubSchedules = onSnapshot(collection(db, 'schedules'), (snapshot) => {
+      const rows = snapshot.docs
+        .map((d) => ({ id: d.id, ...d.data() }))
+        .filter((s) => isValidDateStr(s.startDate) && isValidDateStr(s.endDate));
+      setSchedules(rows);
+    });
+
+    const unsubMeta = onSnapshot(doc(db, 'meta', 'syncStatus'), (snap) => {
+      if (snap.exists()) {
+        setSyncMeta(snap.data());
+      }
+    });
+
+    return () => {
+      unsubSchedules();
+      unsubMeta();
+    };
+  }, []);
+
+  const triggerBizboxSync = useCallback(
+    async ({ silent = false, overrideCreds = null } = {}) => {
+      if (isSyncing) return;
+      setIsSyncing(true);
+
+      try {
+        let savedCreds = {};
+        if (overrideCreds) {
+          savedCreds = overrideCreds;
+        } else {
+          try {
+            savedCreds = JSON.parse(localStorage.getItem(CREDS_STORAGE_KEY) || '{}');
+          } catch {
+            savedCreds = {};
+          }
+        }
+
+        const res = await fetch('/api/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            bizboxId: savedCreds.bizboxId || '',
+            bizboxPw: savedCreds.bizboxPw || '',
+            projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || '',
+            apiKey: import.meta.env.VITE_FIREBASE_API_KEY || ''
+          })
+        });
+
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok || !data.ok) {
+          if (data.code === 'NEEDS_CREDENTIALS' || data.code === 'AUTH_FAILED') {
+            if (!silent) {
+              setIsSyncConfigOpen(true);
+              if (data.code === 'AUTH_FAILED') {
+                pushToast(data.message || '그룹웨어 계정 정보를 다시 확인해주세요.', 'error');
+              }
+            }
+            return;
+          }
+          throw new Error(data.message || '그룹웨어 동기화에 실패했습니다.');
+        }
+
+        if (!silent) {
+          pushToast(`그룹웨어 동기화 완료 · 휴가 ${data.syncedCount}건 반영`);
+        }
+      } catch (err) {
+        if (!silent) {
+          pushToast(err.message || '동기화 중 네트워크 오류가 발생했습니다.', 'error');
+        }
+      } finally {
+        setIsSyncing(false);
+      }
+    },
+    [isSyncing, pushToast]
+  );
+
+  // Silent background auto-sync if stale (> 60 mins) once per session
+  useEffect(() => {
+    if (autoSyncAttempted.current) return;
+    if (!syncMeta) return;
+    autoSyncAttempted.current = true;
+
+    const lastTime = syncMeta.lastSyncedAt ? new Date(syncMeta.lastSyncedAt).getTime() : 0;
+    const sixtyMinutes = 60 * 60 * 1000;
+    if (!lastTime || Date.now() - lastTime > sixtyMinutes) {
+      triggerBizboxSync({ silent: true });
+    }
+  }, [syncMeta, triggerBizboxSync]);
+
+  const handleSaveSchedule = async (scheduleData) => {
     try {
       if (db) {
-        if (schedule.id) {
-          // Update existing
-          const { id, ...data } = schedule;
-          const { setDoc } = await import('firebase/firestore');
-          await setDoc(doc(db, 'schedules', id), data, { merge: true });
+        if (scheduleData.id) {
+          const { id, ...rest } = scheduleData;
+          await setDoc(doc(db, 'schedules', id), rest, { merge: true });
+          pushToast('일정이 수정되었습니다.');
         } else {
-          // Add new
-          const { id, ...data } = schedule;
-          await addDoc(collection(db, 'schedules'), data);
+          const { id: _id, ...rest } = scheduleData;
+          await addDoc(collection(db, 'schedules'), rest);
+          pushToast('새 일정이 등록되었습니다.');
         }
       } else {
-        if (schedule.id) {
-          setSchedules(prev => prev.map(s => s.id === schedule.id ? schedule : s));
+        if (scheduleData.id) {
+          setSchedules((prev) => prev.map((s) => (s.id === scheduleData.id ? scheduleData : s)));
         } else {
-          setSchedules(prev => [...prev, { ...schedule, id: Date.now().toString() }]);
+          setSchedules((prev) => [...prev, { ...scheduleData, id: String(Date.now()) }]);
         }
+        pushToast('일정이 저장되었습니다.');
       }
-      setIsModalOpen(false);
+      setIsFormOpen(false);
       setSelectedSchedule(null);
     } catch (error) {
-      console.error("Error adding document: ", error);
-      alert("앗! 일정 저장에 실패했습니다. (에러: " + error.message + ")");
+      pushToast(`저장 실패: ${error.message}`, 'error');
     }
   };
 
   const handleDeleteSchedule = async (id) => {
-    if (window.confirm('이 일정을 삭제하시겠습니까?')) {
-      try {
-        if (db) {
-          await deleteDoc(doc(db, 'schedules', id));
-        } else {
-          setSchedules(prev => prev.filter(s => s.id !== id));
-        }
-      } catch (error) {
-        console.error("Error deleting document: ", error);
-        alert("앗! 일정 삭제에 실패했습니다. (에러: " + error.message + ")");
+    try {
+      if (db) {
+        await deleteDoc(doc(db, 'schedules', id));
+      } else {
+        setSchedules((prev) => prev.filter((s) => s.id !== id));
+      }
+      setIsDetailOpen(false);
+      setSelectedSchedule(null);
+      pushToast('일정이 삭제되었습니다.');
+    } catch (error) {
+      pushToast(`삭제 실패: ${error.message}`, 'error');
+    }
+  };
+
+  // Filtered schedules (member + category + search)
+  const memberAndSearchFiltered = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return schedules.filter((s) => {
+      if (selectedMember !== 'all') {
+        const names = splitNames(s.name);
+        const matchesMember =
+          selectedMember === '개발4팀'
+            ? names.includes('개발4팀')
+            : names.includes(selectedMember) || names.includes('개발4팀');
+        if (!matchesMember) return false;
+      }
+
+      if (q) {
+        const hay = `${s.name || ''} ${s.type || ''} ${s.memo || ''} ${getCategoryLabel(s.category)}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+
+      return true;
+    });
+  }, [schedules, selectedMember, searchQuery]);
+
+  const filteredSchedules = useMemo(() => {
+    if (selectedCategory === 'all') return memberAndSearchFiltered;
+    return memberAndSearchFiltered.filter((s) => s.category === selectedCategory);
+  }, [memberAndSearchFiltered, selectedCategory]);
+
+  // Active month statistics (based on member/search filter so counts stay informative)
+  const monthStats = useMemo(() => {
+    const mStart = startOfMonth(currentDate);
+    const mEnd = endOfMonth(currentDate);
+    const counts = { vacation: 0, outside: 0, meeting: 0, training: 0, other: 0 };
+
+    for (const s of memberAndSearchFiltered) {
+      const sStart = parseISO(s.startDate);
+      const sEnd = parseISO(s.endDate);
+      if (sEnd >= mStart && sStart <= mEnd) {
+        const key = counts[s.category] !== undefined ? s.category : 'other';
+        counts[key] += 1;
       }
     }
+    return counts;
+  }, [memberAndSearchFiltered, currentDate]);
+
+  const getSchedulesForDay = useCallback(
+    (dayDate) => {
+      const dayStr = format(dayDate, 'yyyy-MM-dd');
+      return filteredSchedules
+        .filter((s) => s.startDate <= dayStr && s.endDate >= dayStr)
+        .sort((a, b) => {
+          const spanA = a.startDate !== a.endDate ? 0 : 1;
+          const spanB = b.startDate !== b.endDate ? 0 : 1;
+          if (spanA !== spanB) return spanA - spanB;
+          const catA = CATEGORY_ORDER[a.category] || 9;
+          const catB = CATEGORY_ORDER[b.category] || 9;
+          if (catA !== catB) return catA - catB;
+          return (a.name || '').localeCompare(b.name || '', 'ko');
+        });
+    },
+    [filteredSchedules]
+  );
+
+  const todaySchedules = useMemo(() => getSchedulesForDay(new Date()), [getSchedulesForDay]);
+  const focusedDaySchedules = useMemo(
+    () => getSchedulesForDay(focusedDate),
+    [getSchedulesForDay, focusedDate]
+  );
+
+  const upcomingSchedules = useMemo(() => {
+    const todayStr = format(new Date(), 'yyyy-MM-dd');
+    return filteredSchedules
+      .filter((s) => s.endDate >= todayStr)
+      .sort((a, b) => {
+        if (a.startDate !== b.startDate) return a.startDate.localeCompare(b.startDate);
+        return (CATEGORY_ORDER[a.category] || 9) - (CATEGORY_ORDER[b.category] || 9);
+      })
+      .slice(0, 20);
+  }, [filteredSchedules]);
+
+  const formattedSyncTime = useMemo(() => {
+    if (!syncMeta?.lastSyncedAt) return '동기화 대기';
+    const d = new Date(syncMeta.lastSyncedAt);
+    if (isNaN(d.getTime())) return '동기화 대기';
+    return `최근 동기화 ${format(d, 'MM.dd HH:mm')}`;
+  }, [syncMeta]);
+
+  const openCreateModal = (targetDay) => {
+    setModalTargetDate(targetDay || new Date());
+    setSelectedSchedule(null);
+    setIsFormOpen(true);
   };
 
-  const nextMonth = () => setCurrentDate(addMonths(currentDate, 1));
-  const prevMonth = () => setCurrentDate(subMonths(currentDate, 1));
-
-  // 필터링된 일정
-  const filteredSchedules = useMemo(() => {
-    if (selectedMember === 'all') return schedules;
-    return schedules.filter(s => s.name && s.name.includes(selectedMember));
-  }, [schedules, selectedMember]);
-
-  const renderHeader = () => {
-    return (
-      <div className="calendar-header-container">
-        <div className="calendar-header">
-          <div className="month-display">
-            <h2>{format(currentDate, 'yyyy년 M월')}</h2>
-          </div>
-          <div className="nav-buttons">
-            <button onClick={prevMonth} className="icon-btn"><ChevronLeft size={20} /></button>
-            <button onClick={() => setCurrentDate(new Date())} className="today-btn">오늘</button>
-            <button onClick={nextMonth} className="icon-btn"><ChevronRight size={20} /></button>
-          </div>
-        </div>
-        <div className="category-legend">
-          <span className="legend-item cat-vacation">휴가</span>
-          <span className="legend-item cat-outside">외근</span>
-          <span className="legend-item cat-meeting">회의</span>
-          <span className="legend-item cat-training">교육</span>
-          <span className="legend-item cat-other">기타</span>
-        </div>
-      </div>
-    );
-  };
-
-  const renderDays = () => {
-    const days = [];
-    const date = ['일', '월', '화', '수', '목', '금', '토'];
-    for (let i = 0; i < 7; i++) {
-      days.push(
-        <div className="col col-center" key={i}>
-          {date[i]}
-        </div>
-      );
-    }
-    return <div className="days row">{days}</div>;
-  };
-
-  const renderCells = () => {
+  const renderCalendarWeeks = () => {
     const monthStart = startOfMonth(currentDate);
     const monthEnd = endOfMonth(monthStart);
-    const startDate = startOfWeek(monthStart);
-    const endDate = endOfWeek(monthEnd);
+    const gridStart = startOfWeek(monthStart);
+    const gridEnd = endOfWeek(monthEnd);
 
-    const rows = [];
-    let days = [];
-    let day = startDate;
-    let formattedDate = '';
+    const weekRows = [];
+    let cursor = gridStart;
 
-    while (day <= endDate) {
-      for (let i = 0; i < 7; i++) {
-        formattedDate = format(day, 'd');
-        const cloneDay = day;
-        const dayOfWeek = i;
-        
-        // 해당 날짜에 포함되는 일정 필터링
-        const daySchedules = filteredSchedules.filter(s => {
-          if (!s.startDate || !s.endDate) return false;
-          const sStart = parseISO(s.startDate);
-          const sEnd = parseISO(s.endDate);
-          if (isNaN(sStart) || isNaN(sEnd)) return false;
-          return isWithinInterval(cloneDay, { start: new Date(sStart.setHours(0,0,0,0)), end: new Date(sEnd.setHours(23,59,59,999)) });
-        });
+    while (cursor <= gridEnd) {
+      const cells = [];
+      for (let dow = 0; dow < 7; dow++) {
+        const cellDate = cursor;
+        const dateKey = format(cellDate, 'yyyy-MM-dd');
+        const inMonth = isSameMonth(cellDate, monthStart);
+        const isToday = isSameDay(cellDate, new Date());
+        const isFocused = isMobile && isSameDay(cellDate, focusedDate);
 
-        days.push(
+        const dayEvents = getSchedulesForDay(cellDate);
+        const maxVisible = isMobile ? 3 : 7;
+        const visibleEvents = dayEvents.slice(0, maxVisible);
+        const hiddenCount = dayEvents.length - visibleEvents.length;
+
+        const dowClass = dow === 0 ? 'sun' : dow === 6 ? 'sat' : '';
+
+        cells.push(
           <div
-            className={`col cell ${
-              !isSameMonth(day, monthStart)
-                ? 'disabled'
-                : isSameDay(day, new Date()) ? 'selected' : ''
-            }`}
-            key={day}
+            key={dateKey}
+            className={`day-cell ${dowClass} ${!inMonth ? 'outside-month' : ''} ${
+              isToday ? 'is-today' : ''
+            } ${isFocused ? 'is-focused' : ''}`}
             onClick={() => {
-              setSelectedDate(cloneDay);
-              setIsModalOpen(true);
+              setFocusedDate(cellDate);
+              if (!isMobile) {
+                openCreateModal(cellDate);
+              }
             }}
           >
-            <div className="number-wrapper">
-              <span className="number">{formattedDate}</span>
+            <div className="day-top">
+              <div className="day-num-group">
+                <span className="day-num">{format(cellDate, 'd')}</span>
+                {isToday && <span className="today-tag">오늘</span>}
+              </div>
+              <button
+                type="button"
+                className="cell-quick-add"
+                title="이 날짜에 일정 등록"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openCreateModal(cellDate);
+                }}
+              >
+                <Plus size={13} />
+              </button>
             </div>
-            <div className="schedule-container">
-              {daySchedules.map(schedule => {
-                const isStart = isSameDay(cloneDay, parseISO(schedule.startDate));
-                const isEnd = isSameDay(cloneDay, parseISO(schedule.endDate));
+
+            <div className="cell-events">
+              {visibleEvents.map((ev) => {
+                const isStart = ev.startDate === dateKey || dow === 0;
+                const isEnd = ev.endDate === dateKey || dow === 6;
+                let spanClass = 'span-mid';
+                if (isStart && isEnd) spanClass = 'span-single';
+                else if (isStart) spanClass = 'span-start';
+                else if (isEnd) spanClass = 'span-end';
+
+                const subText =
+                  ev.category === 'vacation'
+                    ? ev.type || '휴가'
+                    : ev.memo || getCategoryLabel(ev.category);
+
                 return (
-                  <div 
-                    key={schedule.id} 
-                    className={`schedule-badge cat-${schedule.category} ${isStart ? 'is-start' : ''} ${isEnd ? 'is-end' : ''}`}
+                  <div
+                    key={ev.id}
+                    className={`event-chip cat-${ev.category || 'other'} ${spanClass}`}
                     onClick={(e) => {
                       e.stopPropagation();
-                      setSelectedSchedule(schedule);
-                      setIsDetailModalOpen(true);
+                      if (isMobile) {
+                        setFocusedDate(cellDate);
+                      }
+                      setSelectedSchedule(ev);
+                      setIsDetailOpen(true);
                     }}
-                    title={`${schedule.name} - ${schedule.type || getCategoryLabel(schedule.category)}`}
+                    title={`${ev.name} · ${ev.type || getCategoryLabel(ev.category)}${
+                      ev.memo ? ` — ${ev.memo}` : ''
+                    }`}
                   >
-                    <span className="name">{schedule.name} {schedule.type ? `(${schedule.type})` : (schedule.category === 'vacation' ? '(휴가)' : '')}</span>
+                    <div className="event-text">
+                      <span className="event-who">{formatWhoLabel(ev.name, isMobile)}</span>
+                      {subText && <span className="event-sub">{subText}</span>}
+                    </div>
                   </div>
                 );
               })}
+
+              {hiddenCount > 0 && <div className="more-events-tag">+{hiddenCount}건 더보기</div>}
             </div>
           </div>
         );
-        day = addDays(day, 1);
+
+        cursor = addDays(cursor, 1);
       }
-      rows.push(
-        <div className="row" key={day}>
-          {days}
+
+      weekRows.push(
+        <div className="week-row" key={format(cursor, 'yyyy-MM-dd')}>
+          {cells}
         </div>
       );
-      days = [];
     }
-    return <div className="body">{rows}</div>;
+
+    return <div className="calendar-weeks">{weekRows}</div>;
   };
 
   return (
-    <div className="app-container">
-      
-      <header className="app-header glass-panel">
-        <div className="logo">
-          <CalendarIcon size={24} />
-          <h1>Team Schedule</h1>
-        </div>
-        <div className="header-actions">
-          <select 
-            className="filter-select" 
-            value={selectedMember} 
-            onChange={e => setSelectedMember(e.target.value)}
-          >
-            <option value="all">전체 팀원 보기</option>
-            {TEAM_MEMBERS.map(m => <option key={m} value={m}>{m}</option>)}
-          </select>
-          <button 
-            className="btn-primary"
-            onClick={() => {
-              setSelectedDate(new Date());
-              setSelectedSchedule(null);
-              setIsModalOpen(true);
-            }}
-          >
-            <Plus size={18} />
-            일정 추가
-          </button>
+    <div className="workspace-shell">
+      {/* Top Bar */}
+      <header className="topbar">
+        <div className="topbar-inner">
+          <div className="brand-group">
+            <div className="brand-mark">
+              <CalendarIcon size={18} strokeWidth={2.2} />
+            </div>
+            <div className="brand-titles">
+              <span className="brand-eyebrow">TAEWOONG MEDICAL · R&amp;D DIV. 4</span>
+              <h1 className="brand-name">개발4팀 일정 보드</h1>
+            </div>
+          </div>
+
+          <div className="topbar-actions">
+            <div className="sync-cluster">
+              <span className="sync-status-text">
+                <span className={`status-dot ${syncMeta?.lastSyncedAt ? '' : 'idle'}`} />
+                {formattedSyncTime}
+              </span>
+              <button
+                type="button"
+                className="btn-sync"
+                disabled={isSyncing}
+                onClick={() => triggerBizboxSync({ silent: false })}
+                title="비즈박스 전자결재 휴가 내역을 즉시 불러옵니다"
+              >
+                <RefreshCw size={14} className={isSyncing ? 'spin' : ''} />
+                <span>{isSyncing ? '동기화 중' : '그룹웨어 동기화'}</span>
+              </button>
+              <button
+                type="button"
+                className="btn-sync-config"
+                onClick={() => setIsSyncConfigOpen(true)}
+                title="그룹웨어 연동 계정 설정"
+              >
+                <Settings size={14} />
+              </button>
+            </div>
+
+            <button
+              type="button"
+              className="btn-create"
+              onClick={() => openCreateModal(focusedDate || new Date())}
+            >
+              <Plus size={15} strokeWidth={2.4} />
+              <span>일정 등록</span>
+            </button>
+          </div>
         </div>
       </header>
 
-      <main className="main-content">
-        <div className="calendar-wrapper glass-panel">
-          {renderHeader()}
-          <div className="calendar-scroll-area">
-            <div className="calendar-grid-min-width">
-              {renderDays()}
-              {renderCells()}
-            </div>
+      {/* Main Content */}
+      <main className="workspace-body">
+        {/* Member Filter & Search Bar */}
+        <section className="filter-bar">
+          <div className="member-filter-scroll">
+            <button
+              type="button"
+              className={`filter-pill ${selectedMember === 'all' ? 'active' : ''}`}
+              onClick={() => setSelectedMember('all')}
+            >
+              전체 팀원
+            </button>
+            {TEAM_MEMBERS.map((member) => (
+              <button
+                key={member}
+                type="button"
+                className={`filter-pill ${member === '개발4팀' ? 'team-pill' : ''} ${
+                  selectedMember === member ? 'active' : ''
+                }`}
+                onClick={() =>
+                  setSelectedMember((prev) => (prev === member ? 'all' : member))
+                }
+              >
+                {member}
+              </button>
+            ))}
           </div>
-        </div>
 
-        <aside className="dashboard-wrapper glass-panel">
-          <div className="dashboard-header">
-            <Users size={20} />
-            <h3>다가오는 일정</h3>
-          </div>
-          <div className="dashboard-list">
-            {filteredSchedules
-              .filter(s => s.startDate && s.endDate && !isNaN(parseISO(s.startDate)) && !isNaN(parseISO(s.endDate)))
-              .filter(s => new Date(s.endDate) >= new Date(new Date().setHours(0,0,0,0)))
-              .sort((a, b) => new Date(a.startDate) - new Date(b.startDate))
-              .slice(0, 5)
-              .map(schedule => (
-                <div key={schedule.id} className="dashboard-item">
-                  <div className="date">
-                    {format(parseISO(schedule.startDate), 'M월 d일', { locale: ko })} 
-                    {schedule.startDate !== schedule.endDate && ` ~ ${format(parseISO(schedule.endDate), 'M월 d일', { locale: ko })}`}
-                  </div>
-                  <div className="info">
-                    <strong>{schedule.name}</strong> - {getCategoryLabel(schedule.category)}
-                  </div>
-                  {schedule.memo && <div className="memo">{schedule.memo}</div>}
-                </div>
-              ))}
-            {filteredSchedules.length === 0 && (
-              <p className="empty-msg">예정된 일정이 없습니다.</p>
+          <div className="search-box">
+            <Search size={14} />
+            <input
+              type="text"
+              className="search-input"
+              placeholder="이름, 메모, 구분 검색"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                className="search-clear"
+                onClick={() => setSearchQuery('')}
+                aria-label="검색어 지우기"
+              >
+                <X size={12} />
+              </button>
             )}
           </div>
-        </aside>
+        </section>
+
+        {/* Mobile Switcher */}
+        <div className="mobile-view-tabs">
+          <button
+            type="button"
+            className={`mobile-tab-btn ${mobileTab === 'calendar' ? 'active' : ''}`}
+            onClick={() => setMobileTab('calendar')}
+          >
+            월간 캘린더
+          </button>
+          <button
+            type="button"
+            className={`mobile-tab-btn ${mobileTab === 'agenda' ? 'active' : ''}`}
+            onClick={() => setMobileTab('agenda')}
+          >
+            오늘 · 예정 일정
+          </button>
+        </div>
+
+        <div className="content-grid">
+          {/* Calendar Sheet */}
+          <section
+            className={`calendar-sheet ${
+              isMobile && mobileTab !== 'calendar' ? 'mobile-hidden' : ''
+            }`}
+          >
+            <div className="calendar-toolbar">
+              <div className="month-nav-group">
+                <h2 className="month-heading">{format(currentDate, 'yyyy년 M월')}</h2>
+                <div className="segmented-nav">
+                  <button
+                    type="button"
+                    className="seg-btn"
+                    onClick={() => setCurrentDate(subMonths(currentDate, 1))}
+                    aria-label="이전 달"
+                  >
+                    <ChevronLeft size={16} />
+                  </button>
+                  <button
+                    type="button"
+                    className="seg-btn"
+                    onClick={() => {
+                      const now = new Date();
+                      setCurrentDate(now);
+                      setFocusedDate(now);
+                    }}
+                  >
+                    오늘
+                  </button>
+                  <button
+                    type="button"
+                    className="seg-btn"
+                    onClick={() => setCurrentDate(addMonths(currentDate, 1))}
+                    aria-label="다음 달"
+                  >
+                    <ChevronRight size={16} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="category-pills">
+                <button
+                  type="button"
+                  className={`cat-filter-btn ${selectedCategory === 'all' ? 'active' : ''}`}
+                  onClick={() => setSelectedCategory('all')}
+                >
+                  전체
+                </button>
+                {CATEGORIES.map((cat) => (
+                  <button
+                    key={cat.key}
+                    type="button"
+                    className={`cat-filter-btn ${selectedCategory === cat.key ? 'active' : ''}`}
+                    onClick={() =>
+                      setSelectedCategory((prev) => (prev === cat.key ? 'all' : cat.key))
+                    }
+                  >
+                    <span className={`cat-dot ${cat.key}`} />
+                    <span>{cat.label}</span>
+                    <span className="cat-count">{monthStats[cat.key] || 0}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="weekday-row">
+              {['일', '월', '화', '수', '목', '금', '토'].map((label, idx) => (
+                <div
+                  key={label}
+                  className={`weekday-cell ${idx === 0 ? 'sun' : idx === 6 ? 'sat' : ''}`}
+                >
+                  {label}
+                </div>
+              ))}
+            </div>
+
+            {renderCalendarWeeks()}
+
+            {/* Mobile Selected Day Sheet */}
+            <div className="mobile-day-inspector">
+              <div className="inspector-header">
+                <span className="inspector-title">
+                  {format(focusedDate, 'M월 d일 (EEEE)', { locale: ko })}
+                </span>
+                <button
+                  type="button"
+                  className="btn-inline-add"
+                  onClick={() => openCreateModal(focusedDate)}
+                >
+                  <Plus size={13} />
+                  <span>일정 추가</span>
+                </button>
+              </div>
+
+              {focusedDaySchedules.length === 0 ? (
+                <p className="inspector-empty">선택한 날짜에 등록된 일정이 없습니다.</p>
+              ) : (
+                <div className="inspector-list">
+                  {focusedDaySchedules.map((item) => (
+                    <AgendaCard
+                      key={item.id}
+                      schedule={item}
+                      onClick={() => {
+                        setSelectedSchedule(item);
+                        setIsDetailOpen(true);
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* Right Executive Panel */}
+          <aside
+            className={`side-panel ${
+              isMobile && mobileTab !== 'agenda' ? 'mobile-hidden' : ''
+            }`}
+          >
+            {/* Today's Status */}
+            <div className="panel-card">
+              <div className="panel-card-header">
+                <h3 className="panel-card-title">오늘 현황</h3>
+                <span className="panel-card-meta">
+                  {format(new Date(), 'M월 d일 EEEE', { locale: ko })}
+                </span>
+              </div>
+              {todaySchedules.length === 0 ? (
+                <p className="panel-empty">오늘 등록된 부재·외근 일정이 없습니다.</p>
+              ) : (
+                <div className="agenda-list">
+                  {todaySchedules.map((item) => (
+                    <AgendaCard
+                      key={item.id}
+                      schedule={item}
+                      compactDate
+                      onClick={() => {
+                        setSelectedSchedule(item);
+                        setIsDetailOpen(true);
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Monthly KPI Summary */}
+            <div className="panel-card">
+              <div className="panel-card-header">
+                <h3 className="panel-card-title">{format(currentDate, 'M월')} 요약</h3>
+                <span className="panel-card-meta">
+                  {selectedMember === 'all' ? '전체 기준' : `${selectedMember} 기준`}
+                </span>
+              </div>
+              <div className="kpi-grid">
+                <div className="kpi-box">
+                  <span className="kpi-label">휴가</span>
+                  <span className="kpi-val">{monthStats.vacation}</span>
+                </div>
+                <div className="kpi-box">
+                  <span className="kpi-label">외근</span>
+                  <span className="kpi-val">{monthStats.outside}</span>
+                </div>
+                <div className="kpi-box">
+                  <span className="kpi-label">회의</span>
+                  <span className="kpi-val">{monthStats.meeting}</span>
+                </div>
+                <div className="kpi-box">
+                  <span className="kpi-label">교육·기타</span>
+                  <span className="kpi-val">{monthStats.training + monthStats.other}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Upcoming Timeline */}
+            <div className="panel-card">
+              <div className="panel-card-header">
+                <h3 className="panel-card-title">다가오는 일정</h3>
+                <span className="panel-card-meta">{upcomingSchedules.length}건</span>
+              </div>
+              {upcomingSchedules.length === 0 ? (
+                <p className="panel-empty">예정된 일정이 없습니다.</p>
+              ) : (
+                <div className="agenda-list">
+                  {upcomingSchedules.map((item) => (
+                    <AgendaCard
+                      key={item.id}
+                      schedule={item}
+                      onClick={() => {
+                        setSelectedSchedule(item);
+                        setIsDetailOpen(true);
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </aside>
+        </div>
       </main>
 
-      {isModalOpen && (
-        <ScheduleModal 
+      {/* Modals */}
+      {isFormOpen && (
+        <ScheduleFormModal
           onClose={() => {
-            setIsModalOpen(false);
+            setIsFormOpen(false);
             setSelectedSchedule(null);
           }}
-          onSave={handleAddSchedule}
-          selectedDate={selectedDate}
+          onSave={handleSaveSchedule}
+          targetDate={modalTargetDate}
           editingSchedule={selectedSchedule}
+          activeMemberFilter={selectedMember}
+          onToast={pushToast}
         />
       )}
 
-      {isDetailModalOpen && (
-        <ScheduleDetailModal 
+      {isDetailOpen && selectedSchedule && (
+        <ScheduleDetailModal
           schedule={selectedSchedule}
           onClose={() => {
-            setIsDetailModalOpen(false);
+            setIsDetailOpen(false);
             setSelectedSchedule(null);
           }}
-          onDelete={(id) => {
-            handleDeleteSchedule(id);
-            setIsDetailModalOpen(false);
-          }}
+          onDelete={handleDeleteSchedule}
           onEdit={() => {
-            setIsDetailModalOpen(false);
-            setIsModalOpen(true);
+            setIsDetailOpen(false);
+            setIsFormOpen(true);
           }}
         />
+      )}
+
+      {isSyncConfigOpen && (
+        <SyncConfigModal
+          onClose={() => setIsSyncConfigOpen(false)}
+          onSaveAndSync={(creds) => {
+            localStorage.setItem(CREDS_STORAGE_KEY, JSON.stringify(creds));
+            setIsSyncConfigOpen(false);
+            triggerBizboxSync({ silent: false, overrideCreds: creds });
+          }}
+        />
+      )}
+
+      {/* Toasts */}
+      {toasts.length > 0 && (
+        <div className="toast-container">
+          {toasts.map((t) => (
+            <div key={t.id} className={`toast-item ${t.type === 'error' ? 'error' : ''}`}>
+              <span>{t.message}</span>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
 }
 
-const getCategoryLabel = (cat) => {
-  const map = {
-    vacation: '휴가',
-    outside: '외근',
-    meeting: '회의',
-    training: '교육',
-    other: '기타'
-  };
-  return map[cat] || cat;
-};
+function AgendaCard({ schedule, onClick, compactDate = false }) {
+  const start = parseISO(schedule.startDate);
+  const end = parseISO(schedule.endDate);
+  const dateLabel = compactDate
+    ? schedule.startDate === schedule.endDate
+      ? '당일'
+      : `${format(start, 'M.d')} – ${format(end, 'M.d')}`
+    : schedule.startDate === schedule.endDate
+      ? format(start, 'M월 d일 (EEE)', { locale: ko })
+      : `${format(start, 'M월 d일', { locale: ko })} – ${format(end, 'M월 d일', { locale: ko })}`;
 
-function ScheduleModal({ onClose, onSave, selectedDate, editingSchedule }) {
-  const initialNames = editingSchedule 
-    ? editingSchedule.name.split(',').map(s => s.trim()) 
-    : [TEAM_MEMBERS[0]];
-  const [selectedNames, setSelectedNames] = useState(initialNames);
-  const [category, setCategory] = useState(editingSchedule ? editingSchedule.category : 'outside'); // 휴가가 빠졌으므로 기본값을 '외근'으로 설정
-  const [startDate, setStartDate] = useState(editingSchedule ? editingSchedule.startDate : format(selectedDate || new Date(), 'yyyy-MM-dd'));
-  const [endDate, setEndDate] = useState(editingSchedule ? editingSchedule.endDate : format(selectedDate || new Date(), 'yyyy-MM-dd'));
-  const [memo, setMemo] = useState(editingSchedule ? editingSchedule.memo : '');
+  return (
+    <div className="agenda-item" onClick={onClick}>
+      <div className="agenda-top">
+        <span className="agenda-date">{dateLabel}</span>
+        <span className={`cat-tag cat-${schedule.category || 'other'}`}>
+          {schedule.type || getCategoryLabel(schedule.category)}
+        </span>
+      </div>
+      <div className="agenda-who">{schedule.name}</div>
+      {schedule.memo && <div className="agenda-memo">{schedule.memo}</div>}
+    </div>
+  );
+}
 
-  const toggleName = (m) => {
-    setSelectedNames(prev => 
-      prev.includes(m) ? prev.filter(n => n !== m) : [...prev, m]
-    );
+function ScheduleFormModal({
+  onClose,
+  onSave,
+  targetDate,
+  editingSchedule,
+  activeMemberFilter,
+  onToast
+}) {
+  const defaultNames = editingSchedule
+    ? splitNames(editingSchedule.name)
+    : activeMemberFilter && activeMemberFilter !== 'all'
+      ? [activeMemberFilter]
+      : [];
+
+  const [selectedNames, setSelectedNames] = useState(defaultNames);
+  const [category, setCategory] = useState(
+    editingSchedule ? editingSchedule.category : 'outside'
+  );
+  const [startDate, setStartDate] = useState(
+    editingSchedule
+      ? editingSchedule.startDate
+      : format(targetDate || new Date(), 'yyyy-MM-dd')
+  );
+  const [endDate, setEndDate] = useState(
+    editingSchedule
+      ? editingSchedule.endDate
+      : format(targetDate || new Date(), 'yyyy-MM-dd')
+  );
+  const [memo, setMemo] = useState(editingSchedule?.memo || '');
+
+  const toggleMember = (member) => {
+    if (member === '개발4팀') {
+      setSelectedNames((prev) => (prev.includes('개발4팀') ? [] : ['개발4팀']));
+      return;
+    }
+    setSelectedNames((prev) => {
+      const withoutTeam = prev.filter((n) => n !== '개발4팀');
+      return withoutTeam.includes(member)
+        ? withoutTeam.filter((n) => n !== member)
+        : [...withoutTeam, member];
+    });
   };
 
   const handleSubmit = (e) => {
     e.preventDefault();
     if (selectedNames.length === 0) {
-      alert('최소 한 명 이상의 팀원을 선택해주세요.');
+      onToast('참여 팀원을 최소 1명 이상 선택해주세요.', 'error');
       return;
     }
-    if (new Date(startDate) > new Date(endDate)) {
-      alert('종료일은 시작일보다 빠를 수 없습니다.');
+    if (startDate > endDate) {
+      onToast('종료일은 시작일보다 빠를 수 없습니다.', 'error');
       return;
     }
-    
-    const scheduleData = { name: selectedNames.join(', '), category, startDate, endDate, memo };
+
+    const payload = {
+      name: selectedNames.join(', '),
+      category,
+      startDate,
+      endDate,
+      memo: memo.trim()
+    };
+
     if (editingSchedule?.id) {
-      scheduleData.id = editingSchedule.id;
+      payload.id = editingSchedule.id;
     }
-    
-    onSave(scheduleData);
+
+    onSave(payload);
   };
 
+  const manualCategories = [
+    { key: 'outside', label: '외근' },
+    { key: 'meeting', label: '회의' },
+    { key: 'training', label: '교육' },
+    { key: 'other', label: '기타' }
+  ];
+
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content glass-panel" onClick={e => e.stopPropagation()}>
-        <div className="modal-header">
-          <h3>{editingSchedule ? '일정 수정' : '일정 등록'}</h3>
-          <button className="close-btn" onClick={onClose}>&times;</button>
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3>{editingSchedule ? '일정 수정' : '새 일정 등록'}</h3>
+          <button type="button" className="modal-close" onClick={onClose} aria-label="닫기">
+            <X size={18} />
+          </button>
         </div>
-        <form onSubmit={handleSubmit} className="modal-form">
-          <div className="date-range">
-            <div className="form-group">
-              <label>시작일</label>
-              <input 
-                type="date" 
-                value={startDate} 
-                onChange={e => {
-                  setStartDate(e.target.value);
-                  if (new Date(e.target.value) > new Date(endDate)) {
-                    setEndDate(e.target.value);
-                  }
-                }}
-                required
+
+        <form onSubmit={handleSubmit}>
+          <div className="modal-body">
+            <div className="field-block">
+              <span className="field-label">일정 구분</span>
+              <div className="category-segment-grid">
+                {manualCategories.map((c) => (
+                  <button
+                    key={c.key}
+                    type="button"
+                    className={`cat-choice ${category === c.key ? 'selected' : ''}`}
+                    onClick={() => setCategory(c.key)}
+                  >
+                    <span className={`cat-dot ${c.key}`} />
+                    <span>{c.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="date-grid">
+              <div className="field-block">
+                <label className="field-label">시작일</label>
+                <input
+                  type="date"
+                  className="input-control"
+                  value={startDate}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setStartDate(v);
+                    if (v > endDate) setEndDate(v);
+                  }}
+                  required
+                />
+              </div>
+              <span className="date-sep">–</span>
+              <div className="field-block">
+                <div className="field-label-row">
+                  <label className="field-label">종료일</label>
+                  {startDate !== endDate && (
+                    <button
+                      type="button"
+                      className="text-link-btn"
+                      onClick={() => setEndDate(startDate)}
+                    >
+                      당일로 맞춤
+                    </button>
+                  )}
+                </div>
+                <input
+                  type="date"
+                  className="input-control"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  required
+                />
+              </div>
+            </div>
+
+            <div className="field-block">
+              <div className="field-label-row">
+                <span className="field-label">
+                  대상 팀원 {selectedNames.length > 0 && `(${selectedNames.length})`}
+                </span>
+                <div className="field-helper-btns">
+                  <button
+                    type="button"
+                    className="text-link-btn"
+                    onClick={() => setSelectedNames(['개발4팀'])}
+                  >
+                    개발4팀 일괄
+                  </button>
+                  {selectedNames.length > 0 && (
+                    <button
+                      type="button"
+                      className="text-link-btn"
+                      onClick={() => setSelectedNames([])}
+                    >
+                      선택 해제
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="member-select-grid">
+                {TEAM_MEMBERS.map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    className={`member-select-chip ${
+                      selectedNames.includes(m) ? 'selected' : ''
+                    }`}
+                    onClick={() => toggleMember(m)}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="field-block">
+              <label className="field-label">상세 메모 (선택)</label>
+              <input
+                type="text"
+                className="input-control"
+                placeholder="예: (14:00) 부천세종병원 미팅, 연구실 안전점검"
+                value={memo}
+                onChange={(e) => setMemo(e.target.value)}
               />
             </div>
-            <span>~</span>
-            <div className="form-group">
-              <label>종료일</label>
-              <input 
-                type="date" 
-                value={endDate} 
-                onChange={e => setEndDate(e.target.value)}
-                required
-              />
-            </div>
           </div>
-          <div className="form-group">
-            <label>팀원 선택</label>
-            <div className="member-chips">
-              {TEAM_MEMBERS.map(m => (
-                <button
-                  key={m}
-                  type="button"
-                  className={`member-chip ${selectedNames.includes(m) ? 'selected' : ''}`}
-                  onClick={() => toggleName(m)}
-                >
-                  {m}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="form-group">
-            <label>분류</label>
-            <select value={category} onChange={e => setCategory(e.target.value)}>
-              <option value="outside">외근</option>
-              <option value="meeting">회의</option>
-              <option value="training">교육</option>
-              <option value="other">기타</option>
-            </select>
-          </div>
-          <div className="form-group">
-            <label>메모 (선택)</label>
-            <input 
-              type="text" 
-              placeholder="예: 제주도 가족여행"
-              value={memo}
-              onChange={e => setMemo(e.target.value)}
-            />
-          </div>
-          <div className="modal-actions">
-            <button type="button" className="btn-secondary" onClick={onClose}>취소</button>
-            <button type="submit" className="btn-primary">저장하기</button>
+
+          <div className="modal-foot">
+            <button type="button" className="btn-outline" onClick={onClose}>
+              취소
+            </button>
+            <button type="submit" className="btn-create">
+              {editingSchedule ? '변경사항 저장' : '일정 등록'}
+            </button>
           </div>
         </form>
       </div>
@@ -429,63 +1081,176 @@ function ScheduleModal({ onClose, onSave, selectedDate, editingSchedule }) {
 }
 
 function ScheduleDetailModal({ schedule, onClose, onDelete, onEdit }) {
-  if (!schedule) return null;
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+
+  const start = parseISO(schedule.startDate);
+  const end = parseISO(schedule.endDate);
+  const daySpan = differenceInCalendarDays(end, start) + 1;
+  const people = splitNames(schedule.name);
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content glass-panel" onClick={e => e.stopPropagation()} style={{ maxWidth: '400px' }}>
-        <div className="modal-header">
-          <h3>일정 상세 정보</h3>
-          <button className="close-btn" onClick={onClose}>&times;</button>
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3>일정 상세</h3>
+          <button type="button" className="modal-close" onClick={onClose} aria-label="닫기">
+            <X size={18} />
+          </button>
         </div>
-        <div style={{ padding: '10px 0', display: 'flex', flexDirection: 'column', gap: '15px' }}>
-          <div style={{ display: 'flex', borderBottom: '1px solid #eee', paddingBottom: '10px' }}>
-            <span style={{ width: '80px', color: '#666', fontWeight: 'bold' }}>팀원</span>
-            <span style={{ fontWeight: 'bold', fontSize: '1.1em' }}>{schedule.name}</span>
-          </div>
-          <div style={{ display: 'flex', borderBottom: '1px solid #eee', paddingBottom: '10px' }}>
-            <span style={{ width: '80px', color: '#666', fontWeight: 'bold' }}>구분</span>
-            <span style={{ padding: '4px 10px', backgroundColor: '#e6f7ff', color: '#0050b3', borderRadius: '4px', fontWeight: 'bold' }}>
+
+        <div className="modal-body">
+          <div className="detail-meta-row">
+            <span className={`cat-tag cat-${schedule.category || 'other'}`}>
               {schedule.type || getCategoryLabel(schedule.category)}
             </span>
-          </div>
-          <div style={{ display: 'flex', borderBottom: '1px solid #eee', paddingBottom: '10px' }}>
-            <span style={{ width: '80px', color: '#666', fontWeight: 'bold' }}>일자</span>
-            <span>
-              {format(parseISO(schedule.startDate), 'yyyy년 M월 d일', { locale: ko })} 
-              {schedule.startDate !== schedule.endDate && ` ~ ${format(parseISO(schedule.endDate), 'yyyy년 M월 d일', { locale: ko })}`}
+            <span className="source-badge">
+              {schedule.category === 'vacation' ? '그룹웨어 전자결재 연동' : '직접 등록 일정'}
             </span>
           </div>
+
+          <div className="detail-section">
+            <span className="detail-label">일시</span>
+            <span className="detail-value">
+              {format(start, 'yyyy년 M월 d일 (EEE)', { locale: ko })}
+              {schedule.startDate !== schedule.endDate &&
+                ` – ${format(end, 'yyyy년 M월 d일 (EEE)', { locale: ko })} (${daySpan}일간)`}
+            </span>
+          </div>
+
+          <div className="detail-section">
+            <span className="detail-label">참여 인원</span>
+            <div className="detail-people">
+              {people.map((p) => (
+                <span key={p} className="person-badge">
+                  {p}
+                </span>
+              ))}
+            </div>
+          </div>
+
           {schedule.memo && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-              <span style={{ color: '#666', fontWeight: 'bold' }}>비고 (상세 내용)</span>
-              <div style={{ backgroundColor: '#f9f9f9', padding: '12px', borderRadius: '6px', border: '1px solid #eaeaea', whiteSpace: 'pre-wrap' }}>
-                {schedule.memo}
-              </div>
+            <div className="detail-section">
+              <span className="detail-label">비고 · 상세 내용</span>
+              <div className="detail-memo-box">{schedule.memo}</div>
             </div>
           )}
         </div>
-        <div className="modal-actions" style={{ justifyContent: 'space-between', marginTop: '20px' }}>
-          <div style={{ display: 'flex', gap: '10px' }}>
-            <button 
-              type="button" 
-              onClick={() => onDelete(schedule.id)}
-              style={{ backgroundColor: '#ff4d4f', color: 'white', padding: '10px 16px', borderRadius: '6px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}
-            >
-              일정 삭제
-            </button>
-            {schedule.category !== 'vacation' && (
-              <button 
-                type="button" 
-                onClick={onEdit}
-                style={{ backgroundColor: '#1890ff', color: 'white', padding: '10px 16px', borderRadius: '6px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}
+
+        <div className="modal-foot split">
+          <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+            {!confirmingDelete ? (
+              <button
+                type="button"
+                className="btn-danger-ghost"
+                onClick={() => setConfirmingDelete(true)}
               >
-                일정 수정
+                삭제
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="btn-danger-solid"
+                  onClick={() => onDelete(schedule.id)}
+                >
+                  삭제 확인
+                </button>
+                <button
+                  type="button"
+                  className="btn-outline"
+                  onClick={() => setConfirmingDelete(false)}
+                >
+                  취소
+                </button>
+              </>
+            )}
+
+            {schedule.category !== 'vacation' && !confirmingDelete && (
+              <button type="button" className="btn-outline" onClick={onEdit}>
+                수정
               </button>
             )}
           </div>
-          <button type="button" className="btn-primary" onClick={onClose}>확인</button>
+
+          <button type="button" className="btn-create" onClick={onClose}>
+            확인
+          </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function SyncConfigModal({ onClose, onSaveAndSync }) {
+  const existing = useMemo(() => {
+    try {
+      return JSON.parse(localStorage.getItem(CREDS_STORAGE_KEY) || '{}');
+    } catch {
+      return {};
+    }
+  }, []);
+
+  const [bizboxId, setBizboxId] = useState(existing.bizboxId || '');
+  const [bizboxPw, setBizboxPw] = useState(existing.bizboxPw || '');
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (!bizboxId.trim() || !bizboxPw) return;
+    onSaveAndSync({ bizboxId: bizboxId.trim(), bizboxPw });
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3>그룹웨어 직접 동기화 설정</h3>
+          <button type="button" className="modal-close" onClick={onClose} aria-label="닫기">
+            <X size={18} />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit}>
+          <div className="modal-body">
+            <div className="sync-info-note">
+              별도 프로그램(.exe/.bat) 없이 웹과 모바일에서 곧바로 비즈박스 전자결재(기결·상신·참조함) 휴가 내역을 불러옵니다. 입력하신 계정은 현재 기기 브라우저에만 안전하게 보관됩니다.
+            </div>
+
+            <div className="field-block">
+              <label className="field-label">비즈박스 아이디</label>
+              <input
+                type="text"
+                className="input-control"
+                placeholder="그룹웨어 로그인 아이디"
+                value={bizboxId}
+                onChange={(e) => setBizboxId(e.target.value)}
+                autoComplete="username"
+                required
+              />
+            </div>
+
+            <div className="field-block">
+              <label className="field-label">비즈박스 비밀번호</label>
+              <input
+                type="password"
+                className="input-control"
+                placeholder="그룹웨어 로그인 비밀번호"
+                value={bizboxPw}
+                onChange={(e) => setBizboxPw(e.target.value)}
+                autoComplete="current-password"
+                required
+              />
+            </div>
+          </div>
+
+          <div className="modal-foot">
+            <button type="button" className="btn-outline" onClick={onClose}>
+              닫기
+            </button>
+            <button type="submit" className="btn-create">
+              저장 후 즉시 동기화
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );

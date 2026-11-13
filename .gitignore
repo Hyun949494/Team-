@@ -8,9 +8,17 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+**/node_modules
 dist
 dist-ssr
 *.local
+.env
+.env.*
+!.env.example
+*.exe
+scraper/out.cjs
+get_config.js
+.vercel
 
 # Editor directories and files
 .vscode/*
