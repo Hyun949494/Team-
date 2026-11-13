@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   format,
   startOfWeek,
@@ -20,9 +20,10 @@ import {
   Plus,
   Calendar as CalendarIcon,
   RefreshCw,
-  Settings,
   Search,
-  X
+  X,
+  ExternalLink,
+  Copy
 } from 'lucide-react';
 import { collection, onSnapshot, addDoc, deleteDoc, doc, setDoc } from 'firebase/firestore';
 import { db } from './firebase';
@@ -57,8 +58,6 @@ const CATEGORY_ORDER = {
   training: 4,
   other: 5
 };
-
-const CREDS_STORAGE_KEY = 'bizbox_sync_creds_v1';
 
 const getCategoryLabel = (cat) => {
   const found = CATEGORIES.find((c) => c.key === cat);
@@ -106,9 +105,7 @@ function App() {
   const [isSyncConfigOpen, setIsSyncConfigOpen] = useState(false);
 
   // Sync state
-  const [isSyncing, setIsSyncing] = useState(false);
   const [syncMeta, setSyncMeta] = useState(null);
-  const autoSyncAttempted = useRef(false);
 
   // Toast state
   const [toasts, setToasts] = useState([]);
@@ -149,76 +146,6 @@ function App() {
       unsubMeta();
     };
   }, []);
-
-  const triggerBizboxSync = useCallback(
-    async ({ silent = false, overrideCreds = null } = {}) => {
-      if (isSyncing) return;
-      setIsSyncing(true);
-
-      try {
-        let savedCreds = {};
-        if (overrideCreds) {
-          savedCreds = overrideCreds;
-        } else {
-          try {
-            savedCreds = JSON.parse(localStorage.getItem(CREDS_STORAGE_KEY) || '{}');
-          } catch {
-            savedCreds = {};
-          }
-        }
-
-        const res = await fetch('/api/sync', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            bizboxId: savedCreds.bizboxId || '',
-            bizboxPw: savedCreds.bizboxPw || '',
-            projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || '',
-            apiKey: import.meta.env.VITE_FIREBASE_API_KEY || ''
-          })
-        });
-
-        const data = await res.json().catch(() => ({}));
-
-        if (!res.ok || !data.ok) {
-          if (data.code === 'NEEDS_CREDENTIALS' || data.code === 'AUTH_FAILED') {
-            if (!silent) {
-              setIsSyncConfigOpen(true);
-              if (data.code === 'AUTH_FAILED') {
-                pushToast(data.message || '그룹웨어 계정 정보를 다시 확인해주세요.', 'error');
-              }
-            }
-            return;
-          }
-          throw new Error(data.message || '그룹웨어 동기화에 실패했습니다.');
-        }
-
-        if (!silent) {
-          pushToast(`그룹웨어 동기화 완료 · 휴가 ${data.syncedCount}건 반영`);
-        }
-      } catch (err) {
-        if (!silent) {
-          pushToast(err.message || '동기화 중 네트워크 오류가 발생했습니다.', 'error');
-        }
-      } finally {
-        setIsSyncing(false);
-      }
-    },
-    [isSyncing, pushToast]
-  );
-
-  // Silent background auto-sync if stale (> 60 mins) once per session
-  useEffect(() => {
-    if (autoSyncAttempted.current) return;
-    if (!syncMeta) return;
-    autoSyncAttempted.current = true;
-
-    const lastTime = syncMeta.lastSyncedAt ? new Date(syncMeta.lastSyncedAt).getTime() : 0;
-    const sixtyMinutes = 60 * 60 * 1000;
-    if (!lastTime || Date.now() - lastTime > sixtyMinutes) {
-      triggerBizboxSync({ silent: true });
-    }
-  }, [syncMeta, triggerBizboxSync]);
 
   const handleSaveSchedule = async (scheduleData) => {
     try {
@@ -490,20 +417,11 @@ function App() {
               <button
                 type="button"
                 className="btn-sync"
-                disabled={isSyncing}
-                onClick={() => triggerBizboxSync({ silent: false })}
-                title="비즈박스 전자결재 휴가 내역을 즉시 불러옵니다"
-              >
-                <RefreshCw size={14} className={isSyncing ? 'spin' : ''} />
-                <span>{isSyncing ? '동기화 중' : '그룹웨어 동기화'}</span>
-              </button>
-              <button
-                type="button"
-                className="btn-sync-config"
                 onClick={() => setIsSyncConfigOpen(true)}
-                title="그룹웨어 연동 계정 설정"
+                title="파일 설치 없이 그룹웨어 휴가 내역을 원클릭 동기화합니다"
               >
-                <Settings size={14} />
+                <RefreshCw size={14} />
+                <span>그룹웨어 동기화</span>
               </button>
             </div>
 
@@ -820,13 +738,9 @@ function App() {
       )}
 
       {isSyncConfigOpen && (
-        <SyncConfigModal
+        <SyncGuideModal
           onClose={() => setIsSyncConfigOpen(false)}
-          onSaveAndSync={(creds) => {
-            localStorage.setItem(CREDS_STORAGE_KEY, JSON.stringify(creds));
-            setIsSyncConfigOpen(false);
-            triggerBizboxSync({ silent: false, overrideCreds: creds });
-          }}
+          onToast={pushToast}
         />
       )}
 
@@ -1181,76 +1095,116 @@ function ScheduleDetailModal({ schedule, onClose, onDelete, onEdit }) {
   );
 }
 
-function SyncConfigModal({ onClose, onSaveAndSync }) {
-  const existing = useMemo(() => {
+function SyncGuideModal({ onClose, onToast }) {
+  const origin =
+    typeof window !== 'undefined' ? window.location.origin : 'https://team-five-nu.vercel.app';
+  const bookmarkletCode = `javascript:(function(){var s=document.createElement('script');s.src='${origin}/api/bookmark-sync?t='+Date.now();document.body.appendChild(s);})();`;
+
+  const setBookmarkHref = useCallback(
+    (node) => {
+      if (node) {
+        node.setAttribute('href', bookmarkletCode);
+      }
+    },
+    [bookmarkletCode]
+  );
+
+  const handleCopyCode = async () => {
     try {
-      return JSON.parse(localStorage.getItem(CREDS_STORAGE_KEY) || '{}');
+      await navigator.clipboard.writeText(bookmarkletCode);
+      onToast('북마크 주소가 복사되었습니다. 즐겨찾기 URL 칸에 붙여넣어 주세요.');
     } catch {
-      return {};
+      onToast('복사에 실패했습니다. 위 버튼을 즐겨찾기 바로 끌어다 놓아주세요.', 'error');
     }
-  }, []);
-
-  const [bizboxId, setBizboxId] = useState(existing.bizboxId || '');
-  const [bizboxPw, setBizboxPw] = useState(existing.bizboxPw || '');
-
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    if (!bizboxId.trim() || !bizboxPw) return;
-    onSaveAndSync({ bizboxId: bizboxId.trim(), bizboxPw });
   };
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-sheet" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <h3>그룹웨어 직접 동기화 설정</h3>
+          <h3>그룹웨어 원클릭 동기화</h3>
           <button type="button" className="modal-close" onClick={onClose} aria-label="닫기">
             <X size={18} />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit}>
-          <div className="modal-body">
-            <div className="sync-info-note">
-              별도 프로그램(.exe/.bat) 없이 웹과 모바일에서 곧바로 비즈박스 전자결재(기결·상신·참조함) 휴가 내역을 불러옵니다. 입력하신 계정은 현재 기기 브라우저에만 안전하게 보관됩니다.
-            </div>
-
-            <div className="field-block">
-              <label className="field-label">비즈박스 아이디</label>
-              <input
-                type="text"
-                className="input-control"
-                placeholder="그룹웨어 로그인 아이디"
-                value={bizboxId}
-                onChange={(e) => setBizboxId(e.target.value)}
-                autoComplete="username"
-                required
-              />
-            </div>
-
-            <div className="field-block">
-              <label className="field-label">비즈박스 비밀번호</label>
-              <input
-                type="password"
-                className="input-control"
-                placeholder="그룹웨어 로그인 비밀번호"
-                value={bizboxPw}
-                onChange={(e) => setBizboxPw(e.target.value)}
-                autoComplete="current-password"
-                required
-              />
-            </div>
+        <div className="modal-body">
+          <div className="sync-info-note">
+            더 이상 압축파일(.zip)이나 실행파일(.bat)을 주고받으실 필요가 없습니다. 아래 버튼을 브라우저 <strong>즐겨찾기 바</strong>에 한 번만 올려두시면, 그룹웨어 화면에서 클릭 한 번으로 2초 만에 최신 휴가가 반영되며 기능 업데이트도 자동 적용됩니다.
           </div>
 
-          <div className="modal-foot">
-            <button type="button" className="btn-outline" onClick={onClose}>
-              닫기
-            </button>
-            <button type="submit" className="btn-create">
-              저장 후 즉시 동기화
+          <div className="bookmarklet-stage">
+            <a
+              ref={setBookmarkHref}
+              className="bookmarklet-pill"
+              onClick={(e) => {
+                e.preventDefault();
+                onToast('클릭하지 마시고 마우스로 끌어 브라우저 상단 즐겨찾기 바에 놓아주세요.');
+              }}
+              title="마우스로 드래그하여 브라우저 상단 북마크 바에 놓으세요"
+            >
+              <RefreshCw size={14} />
+              <span>개발4팀 휴가 동기화</span>
+            </a>
+            <span className="bookmarklet-caption">
+              위 검은색 버튼을 마우스로 끌어 상단 북마크 바(Ctrl+Shift+B)에 놓아주세요
+            </span>
+          </div>
+
+          <div className="step-guide-list">
+            <div className="step-guide-item">
+              <span className="step-num">1</span>
+              <span>
+                크롬 상단에 북마크 바가 안 보이면 <strong>Ctrl + Shift + B</strong>를 눌러 켜주세요.
+              </span>
+            </div>
+            <div className="step-guide-item">
+              <span className="step-num">2</span>
+              <span>
+                위 <strong>[개발4팀 휴가 동기화]</strong> 버튼을 마우스로 끌어서 북마크 바에 올려둡니다. (최초 1회 끝)
+              </span>
+            </div>
+            <div className="step-guide-item">
+              <span className="step-num">3</span>
+              <span>
+                사내 그룹웨어(비즈박스) 로그인 화면에서 방금 추가한 북마크만 누르면 기결·상신·참조함 휴가가 2초 만에 자동 반영됩니다.
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="modal-foot split">
+          <button
+            type="button"
+            className="btn-outline"
+            onClick={handleCopyCode}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+          >
+            <Copy size={13} />
+            <span>코드 복사</span>
+          </button>
+
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <a
+              href="http://ngw.stent.net"
+              target="_blank"
+              rel="noreferrer"
+              className="btn-outline"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '5px',
+                textDecoration: 'none'
+              }}
+            >
+              <span>비즈박스 열기</span>
+              <ExternalLink size={13} />
+            </a>
+            <button type="button" className="btn-create" onClick={onClose}>
+              확인
             </button>
           </div>
-        </form>
+        </div>
       </div>
     </div>
   );
